@@ -17,3 +17,20 @@ class Edits(BaseModel):
     explanation: str = Field(
         description="Brief explanation of why these replacements are needed."
     )
+
+class Counter:
+    counter: str = Field(
+        description="Example of an ethic situation that breaks the axioms"
+    )
+    probability: int = Field(
+        description="""
+            Probability that the ethic situation might happen
+            (0 = impossible situation, 10 = it will happen almost always)
+        """
+    )
+    impact: int = Field(
+        description="""
+            Impact of the ethic situation happening
+            (0 = no impact if it happens, 10 = catastrophic consequences)
+        """
+    )

@@ -66,7 +66,7 @@ def check_solvability(
         s.add(*extra_facts)
 
     result = s.check()
-    print("Result:", result)
+    return result
 
     if result == sat and show_model:
         return s.model()
