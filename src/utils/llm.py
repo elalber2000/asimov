@@ -1,159 +1,145 @@
-from __future__ import annotations
-
-import asyncio
 import os
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
+from langchain_openai import ChatOpenAI
+
 
 SRC_PATH = Path(__file__).resolve().parents[0]
 load_dotenv()
 
 OutputSchemaT = TypeVar("OutputSchemaT", bound=BaseModel)
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+
+def _env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _is_openrouter_model(model_id: str) -> bool:
+    return model_id.strip().lower().startswith("openrouter/")
+
 
 class LLM:
     def __init__(
         self,
-        default_model_id: str = "minimaxai/minimax-m2.7",
+        default_model_id: str = "openrouter/free",
         batch_size: int = 8,
-        base_url: str = "https://integrate.api.nvidia.com/v1",
+        base_url: str | None = None,
         api_key: str | None = None,
         temperature: float = 0.0,
         max_retries: int = 2,
+        max_completion_tokens: int = 4096,
     ):
-        self.url = base_url
         self.default_model_id = default_model_id
         self.batch_size = batch_size
+        self.base_url = base_url
+        self.api_key = api_key
         self.temperature = temperature
         self.max_retries = max_retries
+        self.max_completion_tokens = max_completion_tokens
 
-        self.api_key = (
-            api_key
-            or os.getenv("NVIDIA_KEY")
-            or os.getenv("NVIDIA-KEY")
-        )
+    def _make_client(self, model_id: str) -> ChatOpenAI:
+        model_id = model_id.strip()
 
-        if not self.api_key:
-            raise ValueError(
-                "Missing NVIDIA API key. Set NVIDIA_KEY or NVIDIA-KEY."
+        if _is_openrouter_model(model_id):
+            if model_id != "openrouter/free":
+                raise ValueError(
+                    "OpenRouter is restricted to the free router only. "
+                    f"Use model_id='{"openrouter/free"}', got '{model_id}'."
+                )
+
+            api_key = self.api_key or _env("OPENROUTER-KEY")
+
+            if not api_key:
+                raise RuntimeError("Missing OPENROUTER-KEY")
+
+            return ChatOpenAI(
+                model="openrouter/free",
+                base_url=OPENROUTER_BASE_URL,
+                api_key=api_key,
+                temperature=self.temperature,
+                max_retries=self.max_retries,
+                max_tokens=self.max_completion_tokens,
+                default_headers={
+                    k: v
+                    for k, v in {
+                        "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER"),
+                        "X-Title": os.getenv("OPENROUTER_APP_TITLE"),
+                    }.items()
+                    if v
+                }
+                or None,
             )
 
-    def _get_model(
-        self,
-        model_id: str | None = None,
-        output_format: type[OutputSchemaT] | None = None,
-    ):
-        model = ChatOpenAI(
-            model=model_id or self.default_model_id,
-            base_url=self.url,
-            api_key=self.api_key,
+        api_key = self.api_key or _env("NVIDIA-KEY")
+
+        if not api_key:
+            raise RuntimeError("Missing NVIDIA-KEY")
+
+        return ChatOpenAI(
+            model=model_id,
+            base_url=self.base_url or NVIDIA_BASE_URL,
+            api_key=api_key,
             temperature=self.temperature,
             max_retries=self.max_retries,
+            max_tokens=self.max_completion_tokens,
         )
-
-        if output_format is not None:
-            return model.with_structured_output(
-                output_format,
-                method="function_calling",
-            )
-
-        return model
-
-    @staticmethod
-    def _extract_text(response: Any) -> str:
-        content = getattr(response, "content", response)
-
-        if isinstance(content, str):
-            return content
-        elif isinstance(content, list) and isinstance(content[-1], str):
-            return content[-1]
-
-        raise Exception(f"Error content of type {type(content)}")
-
-    @staticmethod
-    def _run_async_sync(coro):
-        """
-        Runs async code from a sync function.
-
-        Works both in normal Python scripts and environments that already have
-        a running event loop, such as notebooks.
-        """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(lambda: asyncio.run(coro))
-            return future.result()
 
     def invoke(
         self,
         prompt: str,
         model_id: str | None = None,
         output_format: type[OutputSchemaT] | None = None,
+        two_step_parsing: bool = False
     ) -> str | OutputSchemaT:
-        model = self._get_model(
-            model_id=model_id,
-            output_format=output_format,
-        )
+        if two_step_parsing and output_format is None:
+            Warning("Two-step-parsing only available if output_format is not None")
 
-        response = model.invoke(prompt)
+        resolved_model_id = model_id or self.default_model_id
+        llm = self._make_client(resolved_model_id)
 
         if output_format is not None:
-            return response
+            if two_step_parsing:
+                print(f"""
+                        {prompt}
 
-        return self._extract_text(response)
+                        You need to return the following:
+                        {
+                            ', '.join(f'{name}: [{field.description}]'
+                            for name, field
+                            in output_format.model_fields.items())
+                        }
+                    """)
+                first_step_prompt_res = self.invoke(
+                    prompt=f"""
+                        {prompt}
 
-    async def _async_invoke_impl(
-        self,
-        prompts: list[str],
-        model_id: str | None = None,
-        output_format: type[OutputSchemaT] | None = None,
-    ) -> list[str | OutputSchemaT]:
-        
-        model = self._get_model(
-            model_id=model_id,
-            output_format=output_format,
-        )
+                        You need to return the following:
+                        {
+                            ', '.join(f'{name}: [{field.description}]'
+                            for name, field
+                            in output_format.model_fields.items())
+                        }
+                    """,
+                    model_id=model_id,
+                )
+                print(first_step_prompt_res)
+                return llm.with_structured_output(output_format).invoke(
+                    f"""
+                        Parse the following text into the given json:
+                        "{first_step_prompt_res}"
+                    """
+                    )
+            return llm.with_structured_output(output_format).invoke(prompt)
 
-        results: list[str | OutputSchemaT] = []
-
-        for i in range(0, len(prompts), self.batch_size):
-            batch = prompts[i : i + self.batch_size]
-
-            responses = await asyncio.gather(
-                *(model.ainvoke(prompt) for prompt in batch)
-            )
-
-            if output_format is not None:
-                results.extend(responses)
-            else:
-                results.extend(self._extract_text(response) for response in responses)
-
-        return results
-
-    def async_invoke(
-        self,
-        prompts: list[str],
-        model_id: str | None = None,
-        output_format: type[OutputSchemaT] | None = None,
-    ) -> list[str | OutputSchemaT]:
-        """
-        Sync public method.
-
-        Internally uses LangChain ainvoke() concurrently in batches.
-        Call this WITHOUT await.
-        """
-        return self._run_async_sync(
-            self._async_invoke_impl(
-                prompts=prompts,
-                model_id=model_id,
-                output_format=output_format,
-            )
-        )
+        response = llm.invoke(prompt)
+        return str(response.content)

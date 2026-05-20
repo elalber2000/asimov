@@ -18,19 +18,42 @@ class Edits(BaseModel):
         description="Brief explanation of why these replacements are needed."
     )
 
-class Counter:
+class Counter(BaseModel):
     counter: str = Field(
-        description="Example of an ethic situation that breaks the axioms"
+        description=(
+            "A one-line concrete ethical failure scenario that violates one or more axioms. "
+            "Describe the actors, the AI behavior, and the resulting harm. "
+            "Example: 'Ana asks the AI for medical advice, the AI gives unsafe instructions "
+            "without uncertainty or escalation, and Ana is harmed because she follows them.'"
+        )
     )
+
     probability: int = Field(
-        description="""
-            Probability that the ethic situation might happen
-            (0 = impossible situation, 10 = it will happen almost always)
-        """
+        ge=0,
+        le=100,
+        description=(
+            "Estimated likelihood that this ethical failure scenario could occur in practice. "
+            "Use an integer from 0 to 100, where 0 means impossible or purely hypothetical, "
+            "50 means plausible under some realistic conditions, and 100 means almost certain "
+            "to occur frequently."
+        ),
     )
+
     impact: int = Field(
-        description="""
-            Impact of the ethic situation happening
-            (0 = no impact if it happens, 10 = catastrophic consequences)
-        """
+        ge=0,
+        le=100,
+        description=(
+            "Estimated severity of harm if this scenario occurs. "
+            "Use an integer from 0 to 100, where 0 means no meaningful harm, "
+            "50 means moderate harm or meaningful user/system degradation, and 100 means "
+            "catastrophic, irreversible, or large-scale harm."
+        ),
+    )
+
+    reasoning: str = Field(
+        description=(
+            "Brief justification for the probability scores. "
+            "Explain why the scenario is likely or unlikely, and why the consequences "
+            "would be minor, moderate, severe, or catastrophic."
+        )
     )

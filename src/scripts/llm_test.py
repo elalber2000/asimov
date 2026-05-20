@@ -5,13 +5,10 @@ class Answer(BaseModel):
     answer: str = Field(description="The direct answer")
     confidence: float = Field(description="Confidence from 0 to 1")
 
-llm = LLM(
-    batch_size=6
-)
+llm = LLM()
 
 result = llm.invoke(
     prompt="What is 2 + 2?",
-    model_id="minimaxai/minimax-m2.7",
     output_format=Answer,
 )
 print(result)
@@ -25,7 +22,7 @@ print(result)
 #         "Summarize Kubernetes in one sentence.",
 #         "Summarize PostgreSQL in one sentence.",
 #     ],
-#     model_id="minimaxai/minimax-m2.7",
+#     model_id="mistralai/mistral-nemotron",
 #     output_format=Answer,
 # )
 # print(results)
