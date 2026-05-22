@@ -1,13 +1,50 @@
 from __future__ import annotations
 from pathlib import Path
+import re
 import runpy
+import traceback
+from typing import Literal
 from dotenv import load_dotenv
 from z3 import Solver, sat, unsat, unknown
+import logging
 
-from utils.models import Edits
+from utils.llm import LLM
 
 SRC_PATH = Path(__file__).resolve().parents[1]
 load_dotenv()
+
+
+_patches_format_str = """
+    Return the results with the following patch format
+    ```
+    <<<<<<< SEARCH
+    old text 1
+    =======
+    new text 1
+    >>>>>>> REPLACE
+
+    <<<<<<< SEARCH
+    old text 2
+    =======
+    new text 2
+    >>>>>>> REPLACE
+    ```
+    Only apply needed patches, not the whole thing
+    Use the exact same format!!!
+"""
+
+
+def setup_logging(level: int = logging.INFO) -> logging.Logger:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    return logging.getLogger(__name__)
+
+
+def len_axiom_dir(axiom_folder: str):
+    return len(list(Path(axiom_folder).iterdir()))
 
 
 def get_latest_axioms(directory: str):
@@ -15,7 +52,6 @@ def get_latest_axioms(directory: str):
     timestamped = []
 
     for p in directory.glob("*.py"):
-        print(p)
         if p.name == "base.py":
             continue
 
@@ -36,45 +72,89 @@ def get_latest_axioms(directory: str):
     raise FileNotFoundError("No timestamped .py file or base.py found")
 
 
-def load_axioms_from_file(path: str):
-    namespace = runpy.run_path(path)
+def apply_patches(text: str, patches: str) -> str:
+    pattern = r"<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>> REPLACE"
+    changes = re.findall(pattern, patches, flags=re.DOTALL)
 
-    scaffolding = namespace["scaffolding"]
-    axioms = namespace["axioms"]
+    if not changes:
+        raise ValueError("No changes found.")
 
-    return scaffolding(), axioms()
+    for i, (old, new) in enumerate(changes, start=1):
+        if old not in text:
+            raise ValueError(f"Change {i} failed: search text not found:\n{old}")
+        text = text.replace(old, new, 1)
+
+    return text
 
 
-def edit_text_tool(text: str, edits: Edits):
-    res = text
-    for edit in edits:
-        res.replace(edit.old_text, edit.new_text)
-    return res
+def verify_and_correct_axioms(
+    llm: LLM,
+    axioms: str,
+    max_solv_retries: int = 10,
+):
+    last_error = None
+
+    for _ in range(max_solv_retries):
+        try:
+            solv = check_solvability(axioms)
+
+            if solv == sat:
+                return axioms
+
+            diagnostic = f"Z3 returned {solv}"
+
+        except Exception as e:
+            diagnostic = (
+                f"{type(e).__name__}: {e}\n\n"
+                f"Traceback:\n{traceback.format_exc(limit=3)}"
+            )
+
+        patches = llm.invoke(
+            prompt=f"""
+                The following Z3 Python axiom file failed validation.
+
+                Diagnostic:
+                {diagnostic}
+
+                Return minimal exact search-and-replace patches to fix it.
+
+                Rules:
+                - Do not rewrite the whole file.
+                - Use the smallest exact substrings possible.
+                - Preserve the public structure: scaffolding() and axioms().
+                - The corrected file must be valid Python and valid Z3 code.
+
+                # Axioms
+                {axioms}
+
+                {_patches_format_str}
+            """,
+        )
+
+        axioms = apply_patches(axioms, patches)
+
+        last_error = diagnostic
+
+    raise RuntimeError(
+        f"Maximum validation retries reached. Last diagnostic:\n{last_error}"
+    )
 
 
 def check_solvability(
-    scaffolding,
-    axioms,
+    axioms: str,
     extra_facts=None,
-    show_model=True
 ):
+    ns = {}
+    exec(compile(axioms, "<axioms>", "exec"), ns, ns)
     s = Solver()
-    s.add(*(scaffolding + axioms))
 
-    # Optionally add concrete scenario facts
+    if "scaffolding" in ns:
+        s.add(*ns["scaffolding"]())
+
+    if "axioms" in ns:
+        s.add(*ns["axioms"]())
+
     if extra_facts:
         s.add(*extra_facts)
 
-    result = s.check()
-    return result
-
-    if result == sat and show_model:
-        return s.model()
-
-    elif result == unsat:
-        return "Axioms/facts are inconsistent."
-
-    elif result == unknown:
-        return f"Z3 returned unknown: {s.reason_unknown()}"
-
-    return result
+    return s.check()

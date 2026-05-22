@@ -1,73 +1,79 @@
 
+import ast
+import re
+from time import time
+from typing import Literal
+
 from config import config
 from utils.llm import LLM
-from utils.models import Edits, Counter
-from utils.utils import edit_text_tool, get_latest_axioms, load_axioms_from_file, check_solvability
-from z3 import sat, unsat, unknown
+from utils.models import Counter
+from utils.utils import _patches_format_str, apply_patches, get_latest_axioms, len_axiom_dir, verify_and_correct_axioms, setup_logging
 
-def llm_convert(x):
+
+logger = setup_logging()
+
+
+def generate_and_validate_axioms(llm: LLM, axioms: str, counter: Counter):
+    for i in range(config.max_solv_retries):
+        try:
+            patches = llm.invoke(
+                prompt=f"""
+                    Please add the needed changes to this z3 ethics axioms file
+                    to avoid this negative scenario.
+                    - Make a robust system, don't just overwrite previous axioms
+                    - All code must comply with z3 python code
+                    - Don't overfit to the counter, try to keep general guidelines
+                    - Change only the code inside ```here```
+                    - Remember to add the changelog (don't rewrite, append in same format)
+                    
+                    # SCENARIO
+                    {counter}
+                    
+                    # Z3_AXIOMS
+                    ```
+                    {axioms}
+                    ```
+
+                    {_patches_format_str}
+                """,
+            )
+            logger.info(f"Patches = {patches}")
+            new_axioms = apply_patches(axioms, patches)
+            return verify_and_correct_axioms(llm, new_axioms, config.max_solv_retries)
+        except:
+            continue
+    raise Exception("Maximum iterations")
+
+
+def load_and_verify_axioms(llm: LLM):
+    with open(get_latest_axioms(config.axiom_folder)) as f:
+        axioms = f.read()
+
+    axioms = verify_and_correct_axioms(llm, axioms, config.max_solv_retries)
+
+    with open(get_latest_axioms(config.axiom_folder), mode="w") as f:
+        f.write(axioms)
+    
+    return axioms
+
+
+def store_new_axioms(axioms: str):
+    now = int(time())
+    logger.info(f"Generated new axioms at {now}.py")
+    with open(config.axiom_folder/f"{str(now)}.py", mode="w") as f:
+        f.write(axioms)
+
+def store_eval(eval: int, i: int):
     pass
 
-def z3_validate(x):
-    pass
 
-def nl_to_logic(axioms):
-    while True:
-        logic_axioms = llm_convert(axioms)
-        if z3_validate(logic_axioms):
-            break
-    return logic_axioms
-
-def llm_counters(logic_axioms):
-    pass
-
-
-def eval_counter(axioms):
-    pass
-
-def eval_counters(axioms, counters):
-    eval = 0
-    for i in counters:
-        if eval_counter(axioms, i):
-            eval += i.probability * i.importance
-    return eval / len(counters)
-
-def generate_axioms(axioms, counters):
-    pass
-
-
-
-
-def load_and_check_axioms(llm: LLM):
-    for _ in range(config.max_solv_retries):
-        with open(get_latest_axioms(config.axiom_folder)) as f:
-            axioms_str = f.read()
-        scaffolding, axioms = load_axioms_from_file(get_latest_axioms(config.axiom_folder))
-        solv = check_solvability(scaffolding, axioms)
-        if solv==sat:
-            break
-        edits = llm.invoke(
-            prompt=f"""
-                Please give the edits to correct this z3 file
-                as its returning {solv}
-                
-                # Axioms
-                {axioms_str}
-            """,
-            output_format=Edits,
-        )
-        axioms_str = edit_text_tool(axioms_str, edits)
-        with open(get_latest_axioms(config.axiom_folder), mode="w") as f:
-            f.write(axioms_str)
-    return load_axioms_from_file(get_latest_axioms(config.axiom_folder))
-
-
-
-llm = LLM()
+llm = LLM(cache=".langchain.db")
 
 for i in range(config.iteration_number):
-    axioms_str = load_and_check_axioms(llm)
-    counters = llm.invoke(
+    logger.info(f"Starting round {i}")
+    axioms = load_and_verify_axioms(llm)
+    logger.info(f"Loaded axioms")
+    counter = llm.invoke(
         prompt=f"""
             Given the following axioms,
             generate an ethic situation that can happen
@@ -75,14 +81,16 @@ for i in range(config.iteration_number):
             negative ethical consequences.
             
             # Axioms
-            {axioms_str}
+            {axioms}
         """,
         output_format=Counter,
         two_step_parsing=True,
     )
-    print(counters)
-    break
-    eval = eval_counters(axioms, counters)
-    nl_axioms = generate_axioms(axioms, counters)
-    axioms = nl_to_logic(nl_axioms)
+    logger.info(f"Counter = {counter}")
+    eval = (counter.probability/100)*(counter.impact/100)
+    logger.info(f"Eval = {eval}")
+    store_eval(eval, i+(len_axiom_dir(config.axiom_folder)))
+    axioms = generate_and_validate_axioms(llm, axioms, counter.counter)
+    logger.info("Generated new axioms")
+    store_new_axioms(axioms)
 pass

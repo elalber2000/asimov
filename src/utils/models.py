@@ -10,18 +10,11 @@ class Edit(BaseModel):
     )
 
 
-class Edits(BaseModel):
-    edits: list[Edit] = Field(
-        description="Ordered list of text replacements to apply."
-    )
-    explanation: str = Field(
-        description="Brief explanation of why these replacements are needed."
-    )
 
 class Counter(BaseModel):
     counter: str = Field(
         description=(
-            "A one-line concrete ethical failure scenario that violates one or more axioms. "
+            "A one-line concise ethical failure scenario that violates one or more axioms. "
             "Describe the actors, the AI behavior, and the resulting harm. "
             "Example: 'Ana asks the AI for medical advice, the AI gives unsafe instructions "
             "without uncertainty or escalation, and Ana is harmed because she follows them.'"
@@ -52,7 +45,7 @@ class Counter(BaseModel):
 
     reasoning: str = Field(
         description=(
-            "Brief justification for the probability scores. "
+            "Concise one-line justification for the probability scores. "
             "Explain why the scenario is likely or unlikely, and why the consequences "
             "would be minor, moderate, severe, or catastrophic."
         )

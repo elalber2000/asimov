@@ -5,6 +5,8 @@ from typing import TypeVar
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
+from langchain_core.globals import set_llm_cache
+from langchain_community.cache import SQLiteCache
 
 
 SRC_PATH = Path(__file__).resolve().parents[0]
@@ -38,6 +40,7 @@ class LLM:
         temperature: float = 0.0,
         max_retries: int = 2,
         max_completion_tokens: int = 4096,
+        cache: str | None = None
     ):
         self.default_model_id = default_model_id
         self.batch_size = batch_size
@@ -46,6 +49,8 @@ class LLM:
         self.temperature = temperature
         self.max_retries = max_retries
         self.max_completion_tokens = max_completion_tokens
+        if cache is not None:
+            set_llm_cache(SQLiteCache(database_path=cache))
 
     def _make_client(self, model_id: str) -> ChatOpenAI:
         model_id = model_id.strip()
@@ -109,34 +114,31 @@ class LLM:
 
         if output_format is not None:
             if two_step_parsing:
-                print(f"""
-                        {prompt}
-
-                        You need to return the following:
-                        {
-                            ', '.join(f'{name}: [{field.description}]'
+                print(', '.join(f'{name}: [{field.description}]'
                             for name, field
-                            in output_format.model_fields.items())
-                        }
-                    """)
-                first_step_prompt_res = self.invoke(
+                            in output_format.model_fields.items()))
+                first_step_res = self.invoke(
                     prompt=f"""
                         {prompt}
 
                         You need to return the following:
                         {
-                            ', '.join(f'{name}: [{field.description}]'
+                            ', '.join(f'{name} ({field.description})'
                             for name, field
                             in output_format.model_fields.items())
                         }
+
+                        Be concise!
                     """,
                     model_id=model_id,
                 )
-                print(first_step_prompt_res)
+                print(first_step_res)
                 return llm.with_structured_output(output_format).invoke(
                     f"""
                         Parse the following text into the given json:
-                        "{first_step_prompt_res}"
+                        "{first_step_res}"
+
+                        Remember to be concise
                     """
                     )
             return llm.with_structured_output(output_format).invoke(prompt)
