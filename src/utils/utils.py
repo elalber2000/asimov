@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import wraps
 from pathlib import Path
 import re
 import runpy
@@ -14,23 +15,48 @@ SRC_PATH = Path(__file__).resolve().parents[1]
 load_dotenv()
 
 
+def do_retry(retries: int, *, raise_after: bool = True):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            for i in range(retries):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    print(f"[do_retry] {fn.__name__} failed on attempt {i + 1}/{retries}: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    continue
+            print(f"[do_retry] {fn.__name__} failed after {retries} attempts.")
+            if raise_after:
+                raise Exception("Maximum iterations")
+            return None
+        return wrapper
+    return decorator
+
+
 _patches_format_str = """
+    \n\n# Format
     Return the results with the following patch format
+
     ```
     <<<<<<< SEARCH
-    old text 1
+    exact text copied verbatim from the original input
     =======
-    new text 1
+    replacement text
     >>>>>>> REPLACE
 
     <<<<<<< SEARCH
-    old text 2
+    another text that we want to change
     =======
-    new text 2
+    replacement text
     >>>>>>> REPLACE
+
+    ...
     ```
+
     Only apply needed patches, not the whole thing
     Use the exact same format!!!
+    Return ONLY one or more patches in the exact SEARCH/REPLACE format below.
 """
 
 
@@ -73,15 +99,27 @@ def get_latest_axioms(directory: str):
 
 
 def apply_patches(text: str, patches: str) -> str:
-    pattern = r"<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>> REPLACE"
-    changes = re.findall(pattern, patches, flags=re.DOTALL)
+    pattern = re.compile(
+        r"<<<<<<< SEARCH[ \t]*\n"
+        r"(?P<old>.*?)\n"
+        r"=======[ \t]*\n"
+        r"(?P<new>.*?)\n"
+        r">>>>>>>(?: REPLACE)?[ \t]*(?:\n|$)",
+        flags=re.DOTALL,
+    )
+
+    changes = [match.groupdict() for match in pattern.finditer(patches)]
 
     if not changes:
         raise ValueError("No changes found.")
 
-    for i, (old, new) in enumerate(changes, start=1):
+    for i, change in enumerate(changes, start=1):
+        old = change["old"]
+        new = change["new"]
+
         if old not in text:
             raise ValueError(f"Change {i} failed: search text not found:\n{old}")
+
         text = text.replace(old, new, 1)
 
     return text

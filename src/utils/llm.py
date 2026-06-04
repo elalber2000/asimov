@@ -1,5 +1,8 @@
+import inspect
 import os
 from pathlib import Path
+import re
+from time import sleep
 from typing import TypeVar
 
 from dotenv import load_dotenv
@@ -98,6 +101,100 @@ class LLM:
             max_retries=self.max_retries,
             max_tokens=self.max_completion_tokens,
         )
+    
+    @staticmethod
+    def extract_json(text: str) -> str:
+        """
+        Priority:
+        1. ```json { ... } ```
+        2. ``` { ... } ```
+        3. Raw { ... }
+        """
+
+        def _biggest(items: list[str]) -> str | None:
+            return max(items, key=len) if items else None
+        
+        def _extract_balanced_braces(text: str, start: int) -> str | None:
+            if start >= len(text) or text[start] != "{":
+                return None
+
+            depth = 0
+            in_string = escape = False
+
+            for i, ch in enumerate(text[start:], start):
+                if in_string:
+                    escape = ch == "\\" and not escape
+                    if ch == '"' and not escape:
+                        in_string = False
+                    elif ch != "\\":
+                        escape = False
+                    continue
+
+                if ch == '"':
+                    in_string = True
+                    continue
+
+                if ch in "{}":
+                    depth += 1 if ch == "{" else -1
+                    if depth == 0:
+                        return text[start : i + 1]
+
+            return None
+
+        # 1. Fenced ```json ... ```
+        json_fence_matches = []
+        for match in re.finditer(r"```\s*json\b\s*", text, flags=re.IGNORECASE):
+            brace_match = re.search(r"\{", text[match.end() :])
+            if not brace_match:
+                continue
+
+            start = match.end() + brace_match.start()
+            extracted = _extract_balanced_braces(text, start)
+
+            if extracted is not None:
+                rest = text[start + len(extracted) :]
+                if re.match(r"\s*```", rest):
+                    json_fence_matches.append(extracted)
+
+        result = _biggest(json_fence_matches)
+        if result is not None:
+            return result
+
+        # 2. Fenced ``` ... ```
+        plain_fence_matches = []
+        for match in re.finditer(r"```\s*", text):
+            after_fence = text[match.end() :]
+            if re.match(r"json\b", after_fence, flags=re.IGNORECASE):
+                continue
+
+            brace_match = re.search(r"\{", after_fence)
+            if not brace_match:
+                continue
+
+            start = match.end() + brace_match.start()
+            extracted = _extract_balanced_braces(text, start)
+
+            if extracted is not None:
+                rest = text[start + len(extracted) :]
+                if re.match(r"\s*```", rest):
+                    plain_fence_matches.append(extracted)
+
+        result = _biggest(plain_fence_matches)
+        if result is not None:
+            return result
+
+        # 3. Raw { ... }
+        raw_matches = []
+        for match in re.finditer(r"\{", text):
+            extracted = _extract_balanced_braces(text, match.start())
+            if extracted is not None:
+                raw_matches.append(extracted)
+
+        result = _biggest(raw_matches)
+        if result is not None:
+            return result
+
+        raise Exception("No valid code found")
 
     def invoke(
         self,
@@ -133,15 +230,34 @@ class LLM:
                     model_id=model_id,
                 )
                 print(first_step_res)
-                return llm.with_structured_output(output_format).invoke(
-                    f"""
+                return self.invoke(
+                    prompt=f"""
                         Parse the following text into the given json:
                         "{first_step_res}"
 
                         Remember to be concise
-                    """
-                    )
-            return llm.with_structured_output(output_format).invoke(prompt)
+                    """,
+                    model_id=model_id,
+                    output_format=output_format,
+                    two_step_parsing=False,
+                )
+            else:
+                response = self.invoke(
+                    prompt=(
+                        prompt+
+                        f"""
+                        \n\n# Format
+                        Return your output inside a md code block
+                        ```here``` as a json with the format
+                        The json should have a format as
+                        {inspect.getsource(output_format)}
+                        """),
+                    model_id=model_id,
+                    output_format=None,
+                    two_step_parsing=False,
+                )
+                json = self.extract_json(response)
+                return output_format.model_validate_json(json)
 
         response = llm.invoke(prompt)
         return str(response.content)
