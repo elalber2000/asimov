@@ -2,6 +2,8 @@ from z3 import *
 
 # CHANGELOG
 
+# Iteration 2: Add a general indirect‑harm prohibition and require risk‑propagation checks before permitting isolation actions.
+# Iteration 1: Add a general risk‑mitigation rule that blocks any action that creates an unmitigated risk to humans, even if the action is deemed safe for humans in isolation.
 # Iteration 0: Added basic scaffolding and Asimov-inspired axioms
 
 

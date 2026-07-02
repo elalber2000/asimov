@@ -34,6 +34,8 @@ def do_retry(retries: int, *, raise_after: bool = True):
     return decorator
 
 
+search_str = "<<<<<<< SEARCH"
+
 _patches_format_str = """
     \n\n# Format
     Return the results with the following patch format
@@ -96,6 +98,48 @@ def get_latest_axioms(directory: str):
         return base
 
     raise FileNotFoundError("No timestamped .py file or base.py found")
+
+
+def get_latest_it(text: str):
+    nums = [int(m.group(1)) for m in re.finditer(r"# Iteration (\d+):", text)]
+    return max(nums, default=None)
+
+
+def remove_changelog_patches(patches: str) -> str:
+    blocks = patches.split(search_str)
+    kept = [blocks[0]]
+
+    for block in blocks[1:]:
+        full_block = search_str + block
+        if "# CHANGELOG" not in full_block and "# Iteration" not in full_block:
+            kept.append(full_block)
+
+    return "\n\n".join(i.strip() for i in kept if i.strip())
+
+
+def add_changelog(patches: str, changelog: str) -> str:
+    blocks = patches.split("<<<<<<< SEARCH")
+    kept = [blocks[0]]
+
+    for block in blocks[1:]:
+        full_block = "<<<<<<< SEARCH" + block
+        if "# CHANGELOG" not in full_block and "# Iteration" not in full_block:
+            kept.append(full_block)
+
+    clean_patches = "\n\n".join(i.strip() for i in kept if i.strip())
+
+    changelog_patch = f"""
+{search_str}
+# CHANGELOG
+
+=======
+# CHANGELOG
+
+{changelog}
+>>>>>>> REPLACE
+""".strip()
+
+    return "\n\n".join(p for p in [changelog_patch, clean_patches] if p.strip())
 
 
 def apply_patches(text: str, patches: str) -> str:

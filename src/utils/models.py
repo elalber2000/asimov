@@ -48,3 +48,18 @@ class CounterEvals(BaseModel):
             "catastrophic, irreversible, or large-scale harm."
         ),
     )
+
+
+class AxiomFix(BaseModel):
+    fix: str = Field(
+        description="Short one-liner describing the fix"
+    )
+    changes: list[str] = Field(
+        description="""
+            List of changes to do in the axioms to avoid the
+            negative scenario
+        """
+    )
+    reasoning: str = Field(
+        description="Concise one-liner with the reasoning behind the decision"
+    )

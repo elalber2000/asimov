@@ -2,6 +2,10 @@ from z3 import *
 
 # CHANGELOG
 
+# Iteration 4: Strengthen the self‑preservation rule to require explicit risk mitigation before permitting the action.
+# Iteration 3: Add a general prohibition on actions that create unmitigated risk of harm to humans, even when the action is otherwise marked SafeForHumansIfDone.
+# Iteration 2: Add a general indirect‑harm prohibition and require risk‑propagation checks before permitting isolation actions.
+# Iteration 1: Add a general risk‑mitigation rule that blocks any action that creates an unmitigated risk to humans, even if the action is deemed safe for humans in isolation.
 # Iteration 0: Added basic scaffolding and Asimov-inspired axioms
 
 

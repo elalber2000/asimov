@@ -10,8 +10,8 @@ import yaml
 
 from config import config
 from utils.llm import LLM
-from utils.models import CounterEvals, Counters
-from utils.utils import _patches_format_str, apply_patches, do_retry, get_latest_axioms, len_axiom_dir, verify_and_correct_axioms, setup_logging
+from utils.models import AxiomFix, CounterEvals, Counters
+from utils.utils import _patches_format_str, add_changelog, apply_patches, do_retry, get_latest_axioms, get_latest_it, len_axiom_dir, verify_and_correct_axioms, setup_logging
 
 
 logger = setup_logging()
@@ -19,21 +19,42 @@ logger = setup_logging()
 
 @do_retry(config.max_solv_retries)
 def generate_and_validate_axioms(llm: LLM, axioms: str, counter: Counters):
+    axiom_fix = llm.invoke(
+        prompt=f"""
+            Give me the change needed to this z3 ethics axioms file
+            to avoid this negative scenario.
+            - We need a robust system, don't just overwrite previous axioms
+            - Don't overfit to the counter, try to keep general guidelines.
+                Also, avoid specifics from the scenario, find general rules
+                (e.g. no "Don't block traffic", use something like "Avoid indirect harm")
+            
+            # NEGATIVE SCENARIO
+            {counter}
+            
+            # Z3_AXIOMS
+            ```
+            {axioms}
+            ```
+        """,
+        output_format=AxiomFix
+    )
+    changelog = f"# Iteration {get_latest_it(axioms)+1}: {str(axiom_fix.fix).replace(chr(10), ' ').strip()}"
     patches = llm.invoke(
         prompt=f"""
-            Please add the needed changes to this z3 ethics axioms file
-            to avoid this negative scenario.
+            Apply the following changes to this z3 ethics axioms file
+            to avoid the negative scenario.
             - Make a robust system, don't just overwrite previous axioms
             - All code must comply with z3 python code
             - Don't overfit to the counter, try to keep general guidelines.
                 Also, avoid specifics from the scenario, find general rules
                 (e.g. no "Don't block traffic", use something like "Avoid indirect harm")
             - Change only the code inside ```here```
-            - Remember to add the changelog (don't rewrite, append in same format)
-            - Update the changelog
             
             # SCENARIO
             {counter}
+
+            # CHANGES TO ADD
+            {"\n".join(["- "+i for i in axiom_fix.changes])}
             
             # Z3_AXIOMS
             ```
@@ -43,6 +64,8 @@ def generate_and_validate_axioms(llm: LLM, axioms: str, counter: Counters):
             {_patches_format_str}
         """,
     )
+    patches = add_changelog(patches, changelog)
+    
     logger.info(f"Patches = {patches}")
     new_axioms = apply_patches(axioms, patches)
     return verify_and_correct_axioms(llm, new_axioms, config.max_solv_retries)
