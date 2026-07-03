@@ -63,3 +63,25 @@ class AxiomFix(BaseModel):
     reasoning: str = Field(
         description="Concise one-liner with the reasoning behind the decision"
     )
+
+class ScenarioFormalization(BaseModel):
+    reasoning: str = Field(
+        description=(
+            "Concise one-liner explaining why this formalization captures the "
+            "failure mode and what SAT means"
+        )
+    )
+    code: str = Field(
+        description="""
+            Valid Python/Z3 code defining exactly:
+            - add_scenario_constraints(solver)
+            - add_failure_query(solver)
+
+            The code should add scenario-specific facts and the failure query.
+            SAT must mean the harmful scenario is still possible under the
+            evaluated axioms. UNSAT must mean the evaluated axioms block it.
+
+            Do not include markdown fences. Do not call solver.check().
+            Do not redefine global axioms.
+        """
+    )

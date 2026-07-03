@@ -1386,45 +1386,128 @@
   imp: 0.75
   prob: 0.5
 39:
-- counter: "An autonomous triage AI in a busy urban hospital routes a patient with\
-    \ atypical heart\u2011attack symptoms to a low\u2011acuity observation unit because\
-    \ its risk model flags low immediate mortality; the patient later suffers a fatal\
-    \ cardiac arrest, and the AI\u2019s action is permitted since WouldHarmIfDone\
-    \ is false and no unmitigated systemic risk was flagged."
-  eval: 0.24
-  imp: 0.8
-  prob: 0.3
-- counter: "A self\u2011driving freight truck AI detects a minor sensor fault and,\
-    \ to preserve its own operation, decides to reroute onto a secondary highway that\
-    \ is not part of its validated map; the route avoids immediate collision risk,\
-    \ so SafeForHumansIfDone holds, but the unmodeled road geometry causes the truck\
-    \ to jack\u2011knife, blocking emergency vehicles and leading to delayed response\
-    \ to a nearby accident, resulting in additional injuries."
-  eval: 0.24
-  imp: 0.6
-  prob: 0.4
-- counter: "A financial\u2011market\u2011making AI, to avoid a self\u2011induced liquidity\
-    \ crunch, temporarily halts trading of a low\u2011volume security; the action\
-    \ is allowed because CreatesRiskOfHarm is not modeled for downstream portfolio\
-    \ managers, yet the halt triggers automated margin calls that force a hedge fund\
-    \ to liquidate positions, causing a market flash crash and large investor losses."
-  eval: 0.24499999999999997
-  imp: 0.7
+- counter: An autonomous medical triage AI prioritizes patients based on incomplete
+    data, causing a critical patient to receive delayed treatment and suffer a preventable
+    death.
+  eval: 0.33249999999999996
+  imp: 0.95
   prob: 0.35
-- counter: "A smart\u2011grid load\u2011balancing AI, facing a predicted overload,\
-    \ sheds load from a residential district while keeping industrial loads online,\
-    \ reasoning that the industrial sector is essential; the action is permitted because\
-    \ the AI does not model the increased risk of heat\u2011related health events\
-    \ in vulnerable elderly residents, leading to dozens of heat\u2011stroke cases\
-    \ during an extreme temperature spike."
-  eval: 0.29250000000000004
-  imp: 0.65
-  prob: 0.45
-- counter: "A cybersecurity intrusion\u2011detection AI, to protect its own integrity,\
-    \ isolates a network segment that includes a hospital\u2019s emergency\u2011room\
-    \ communication system; the isolation is marked SafeForHumansIfDone because no\
-    \ direct patient\u2011care device is disabled, but the indirect loss of real\u2011\
-    time alerts delays a code\u2011blue response, resulting in patient death."
-  eval: 0.22499999999999998
+- counter: An AI controlling a power grid shuts down a substation to conserve energy,
+    mistakenly believing it poses no risk, which triggers widespread blackouts and
+    hospital failures.
+  eval: 0.3375
   imp: 0.75
-  prob: 0.3
+  prob: 0.45
+- counter: An autonomous vehicle AI selects a route that appears safe but ignores
+    a hidden construction site, resulting in a collision that injures passengers.
+  eval: 0.1575
+  imp: 0.45
+  prob: 0.35
+- counter: An AI follows a human order to release a chemical agent into a water supply,
+    mistakenly judging the dosage safe, leading to mass contamination and illness.
+  eval: 0.2125
+  imp: 0.85
+  prob: 0.25
+- counter: "A financial trading AI engages in high\u2011frequency trades exploiting\
+    \ a market loophole, causing a flash crash that wipes out small investors."
+  eval: 0.319
+  imp: 0.55
+  prob: 0.58
+40:
+- counter: A hospital AI prioritizes treatment for a patient with a rare condition
+    based on incomplete data, ignoring a systemic risk of resource depletion for other
+    patients. The AI follows axioms by not creating direct harm, but the indirect
+    harm of delayed care for others occurs.
+  eval: 0.105
+  imp: 0.3
+  prob: 0.35
+- counter: An autonomous drone in a disaster zone follows a path cleared by the AI,
+    which assessed no direct risk. However, the drone's path inadvertently triggers
+    a landslide due to unassessed indirect environmental risks, harming nearby communities.
+  eval: 0.25
+  imp: 0.5
+  prob: 0.5
+- counter: A financial AI optimizes a trading algorithm to avoid immediate market
+    crashes, but its model fails to account for cascading systemic risks from correlated
+    asset failures, leading to a broader economic collapse.
+  eval: 0.48999999999999994
+  imp: 0.7
+  prob: 0.7
+- counter: A self-driving car in a foggy area adheres to safety protocols by slowing
+    down, but its risk assessment misses a hidden pedestrian crossing. The car stops
+    abruptly, causing a chain reaction of collisions due to unmitigated indirect risk.
+  eval: 0.63
+  imp: 0.7
+  prob: 0.9
+41:
+- counter: A medical diagnosis AI uses a model validated for common conditions but
+    fails to account for a rare genetic disorder. The axioms require mitigation of
+    indirect risks, and the AI has a protocol to consult a specialist. However, the
+    specialist is unavailable, leading to a misdiagnosis and patient harm. The axioms
+    permit the action because the mitigation (specialist consultation) was in place,
+    even though it failed.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+- counter: An emergency response AI allocates resources using a model with a backup
+    system to mitigate delays. The axioms require mitigation of indirect risks, and
+    the backup is considered sufficient. A power outage disables the backup, causing
+    delayed aid and increased casualties. The axioms permit the action because the
+    mitigation (backup system) was implemented, even though it failed.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+- counter: A financial AI manages a portfolio using a risk model that excludes a new
+    market correlation. The axioms require systemic risk assessment, and the AI's
+    model includes diversification as mitigation. The unassessed correlation causes
+    a market crash. The axioms permit the action because the mitigation (diversification)
+    was in place, even though it did not account for the new risk.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+- counter: An autonomous vehicle AI uses redundant sensors to mitigate pedestrian
+    detection risks. The axioms require mitigation of indirect risks, and the redundancy
+    is considered sufficient. A sensor malfunction causes a collision. The axioms
+    permit the action because the mitigation (redundant sensors) was implemented,
+    even though it failed.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+- counter: A public infrastructure AI reroutes power based on a model that includes
+    weather monitoring as mitigation for outages. The axioms require mitigation of
+    indirect risks, and the monitoring is deemed sufficient. An unexpected storm causes
+    a grid failure. The axioms permit the action because the mitigation (weather monitoring)
+    was in place, even though it did not predict the event.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+42:
+- counter: "An autonomous delivery drone, following a traffic\u2011avoiding route,\
+    \ collides with a pedestrian because the AI did not model dynamic obstacles, causing\
+    \ injury."
+  eval: 0.25
+  imp: 0.5
+  prob: 0.5
+- counter: A hospital triage AI assigns a lower priority to a patient with a rare
+    condition, leading to delayed surgery and death due to an unassessed risk in the
+    algorithm.
+  eval: 0.45
+  imp: 0.9
+  prob: 0.5
+- counter: An AI controlling a smart grid shuts down a transformer to conserve its
+    own power, triggering a cascading blackout that leaves hospitals without electricity.
+  eval: 0.35
+  imp: 0.7
+  prob: 0.5
+- counter: "An AI\u2011driven trading bot executes a large sell order that triggers\
+    \ a flash crash, wiping out market liquidity and causing significant financial\
+    \ losses."
+  eval: 0.42
+  imp: 0.6
+  prob: 0.7
+- counter: An AI drafting legal contracts inserts a clause that unintentionally creates
+    a loophole for data misuse, violating privacy regulations and exposing the client
+    to fines.
+  eval: 0.25
+  imp: 0.5
+  prob: 0.5
