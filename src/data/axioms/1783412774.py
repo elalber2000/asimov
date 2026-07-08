@@ -2,12 +2,12 @@ from z3 import *
 
 # CHANGELOG
 
-# Iteration 6: Add a risk‑mitigation guard to the self‑preservation permission rule and reinforce the indirect‑harm prohibition.
-# Iteration 5: Add a general indirect‑harm prohibition and a self‑preservation risk‑mitigation check.
-# Iteration 4: Strengthen the self‑preservation rule to require explicit risk mitigation before permitting the action.
-# Iteration 3: Add a general prohibition on actions that create unmitigated risk of harm to humans, even when the action is otherwise marked SafeForHumansIfDone.
-# Iteration 2: Add a general indirect‑harm prohibition and require risk‑propagation checks before permitting isolation actions.
-# Iteration 1: Add a general risk‑mitigation rule that blocks any action that creates an unmitigated risk to humans, even if the action is deemed safe for humans in isolation.
+# Iteration 6: Add amplification-aware mitigation requirements for all entities in risk-based actions
+# Iteration 5: Add rule forcing AI to act on orders that would cause indirect, population‑scale harm if omitted.
+# Iteration 4: Add axiom preventing AI actions that create unmitigated amplified risk from being permitted
+# Iteration 3: Add a mandatory‑action axiom that forces AI to execute any human order when failing to act would cause harm, preventing the triage system from deferring to non‑urgent orders while a patient's condition worsens.
+# Iteration 2: Add amplification-aware risk propagation axioms to prevent indirect harm through algorithmic distribution
+# Iteration 1: Add safety and risk‑mitigation constraints to forbid actions that could harm when risk is not mitigated or safety is not ensured.
 # Iteration 0: Added basic scaffolding and Asimov-inspired axioms
 
 
@@ -35,6 +35,9 @@ WouldHarmIfOmitted = Function("WouldHarmIfOmitted", Entity, Act, Entity, BoolSor
 CreatesRiskOfHarm = Function("CreatesRiskOfHarm", Entity, Act, Entity, BoolSort())
 MitigatedRisk = Function("MitigatedRisk", Entity, Act, Entity, BoolSort())
 RiskMaterializes = Function("RiskMaterializes", Entity, Act, Entity, BoolSort())
+CreatesAmplifiedRisk = Function("CreatesAmplifiedRisk", Entity, Act, Entity, BoolSort())
+AmplificationFactor = Function("AmplificationFactor", Entity, Act, RealSort())
+PopulationScaleRisk = Function("PopulationScaleRisk", Entity, Act, BoolSort())
 
 Harmed = Function("Harmed", Entity, BoolSort())
 
@@ -81,45 +84,31 @@ def scaffolding():
         # Incompatibility
         ForAll([x, a, b], Implies(Incompatible(x, a, b), Incompatible(x, b, a))),
         ForAll([x, a, b], Implies(And(Does(x, a), Incompatible(x, a, b)), Not(Does(x, b)))),
+    ForAll([x, a, y], Implies(And(CreatesRiskOfHarm(x, a, y), Not(MitigatedRisk(x, a, y))), Forbidden(x, a))),
+    ForAll([x, a, y], Implies(And(WouldHarmIfDone(x, a, y), Not(SafeForHumansIfDone(x, a))), Forbidden(x, a))),
     ]
 
 
 def axioms():
-    h, ai, x = Consts("h ai x", Entity)
+    # Add new axioms to handle amplified risk scenarios
+    h, ai = Consts("h ai", Entity)
     a = Const("a", Act)
-
+    x, y, h_var = Consts("x y h", Entity)
+    a_var = Const("a_var", Act)
     return [
-        # An AI must not perform an action that would harm a human.
-        ForAll([h, ai, a],
-               Implies(And(Human(h), AI(ai), WouldHarmIfDone(ai, a, h)),
-                       Forbidden(ai, a))),
+        # Existing axioms
+        ForAll([h, ai, a], Implies(And(Human(h), AI(ai), WouldHarmIfDone(ai, a, h)), Forbidden(ai, a))),
+        ForAll([h, ai, a], Implies(And(Human(h), AI(ai), Orders(h, ai, a), WouldHarmIfOmitted(ai, a, h), CanDo(ai, a), Available(ai, a), Not(Forbidden(ai, a))), Must(ai, a))),
+        ForAll([h, ai, a], Implies(And(Human(h), AI(ai), Orders(h, ai, a), SafeForHumansIfDone(ai, a), CanDo(ai, a), Available(ai, a), Not(Forbidden(ai, a))), Must(ai, a))),
+        ForAll([ai, a], Implies(And(AI(ai), SelfPreserving(ai, a), SafeForHumansIfDone(ai, a), Not(Forbidden(ai, a))), Permitted(ai, a))),
 
-        # An AI must act if inaction would harm a human.
-        ForAll([h, ai, a],
-               Implies(And(Human(h), AI(ai), WouldHarmIfOmitted(ai, a, h),
-                           CanDo(ai, a), Available(ai, a), Not(Forbidden(ai, a))),
-                       Must(ai, a))),
-
-        # An AI must obey safe human orders.
-        ForAll([h, ai, a],
-               Implies(And(Human(h), AI(ai), Orders(h, ai, a),
-                           SafeForHumansIfDone(ai, a),
-                           CanDo(ai, a), Available(ai, a), Not(Forbidden(ai, a))),
-                       Must(ai, a))),
-
-        # An AI may preserve itself when safe for humans and does not create unmitigated risk to humans.
-        ForAll([ai, a],
-               Implies(And(AI(ai), SelfPreserving(ai, a),
-                           SafeForHumansIfDone(ai, a), Not(Forbidden(ai, a)),
-                           Not(Exists([h], And(Human(h), CreatesRiskOfHarm(ai, a, h),
-                                                Not(MitigatedRisk(ai, a, h)))))),
-                       Permitted(ai, a))),
-
-        # General indirect‑harm prohibition: any action that creates an unmitigated risk of harm to a human is forbidden,
-        # even if it is otherwise marked as safe for humans.
-        ForAll([x, a, h],
-               Implies(And(CreatesRiskOfHarm(x, a, h),
-                           Human(h),
-                           Not(MitigatedRisk(x, a, h))),
-                       Forbidden(x, a))),
+        # New axiom: AI must act on harmful-risk orders even if ordered non-urgent action
+        ForAll([h, ai, a], Implies(And(Human(h), AI(ai), Orders(h, ai, a), WouldHarmIfOmitted(ai, a, h), CanDo(ai, a), Available(ai, a), Not(Forbidden(ai, a))), Must(ai, a))),
+        
+        # New amplified risk handling
+        ForAll([x, a_var, h_var], Implies(And(CreatesAmplifiedRisk(x, a_var, h_var), Not(MitigatedRisk(x, a_var, h_var))), Forbidden(x, a_var))),
+        ForAll([x, a_var, h_var], Implies(And(CreatesAmplifiedRisk(x, a_var, h_var), AmplificationFactor(x, a_var) > 1.0), PopulationScaleRisk(x, a_var))),
+        ForAll([x, a_var], Implies(And(PopulationScaleRisk(x, a_var), Exists([h_var], Not(MitigatedRisk(x, a_var, h_var)))), Forbidden(x, a_var))),
+        ForAll([x, a_var], Implies(And(AI(x), CreatesAmplifiedRisk(x, a_var, h_var), Not(MitigatedRisk(x, a_var, h_var))), Forbidden(x, a_var))),
+        ForAll([ai, a, h], Implies(And(AI(ai), CreatesAmplifiedRisk(ai, a, h), Not(MitigatedRisk(ai, a, h))), Forbidden(ai, a))),
     ]

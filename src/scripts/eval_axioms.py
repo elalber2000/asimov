@@ -1,6 +1,4 @@
 import csv
-import json
-import re
 from pathlib import Path
 
 import yaml
@@ -13,11 +11,13 @@ from utils.utils import get_latest_axioms, setup_logging
 logger = setup_logging()
 
 
+DEFAULT_CLASSES = ("benign", "harm")
+
+
 def make_env():
     import z3
 
-    env = {"__name__": "__z3_eval__"}
-    env["z3"] = z3
+    env = {"__name__": "__z3_eval__", "z3": z3}
 
     for name in dir(z3):
         if not name.startswith("_"):
@@ -26,16 +26,48 @@ def make_env():
     return env
 
 
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return list(value)
+
+
 def load_axiom_files():
+    axiom_folder = Path(config.axiom_folder)
+    configured_names = _as_list(getattr(config, "z3_eval_axiom_files", None))
+
+    if configured_names:
+        files = []
+        for name in configured_names:
+            path = Path(name)
+            if not path.suffix:
+                path = path.with_suffix(".py")
+            if not path.is_absolute():
+                path = axiom_folder / path
+            files.append(path)
+
+        missing = [str(path) for path in files if not path.exists()]
+        if missing:
+            raise FileNotFoundError(f"Configured axiom file(s) not found: {', '.join(missing)}")
+
+        return files
+
     files = sorted(
         (
             path
-            for path in Path(config.axiom_folder).glob("*.py")
+            for path in axiom_folder.glob("*.py")
             if path.stem.isdigit()
         ),
         key=lambda path: int(path.stem),
     )
-    selected = files[::config.z3_eval_step]
+
+    if not files:
+        raise FileNotFoundError(f"No numeric axiom files found in {axiom_folder}")
+
+    step = getattr(config, "z3_eval_step", 1)
+    selected = files[::step]
 
     if files[-1] not in selected:
         selected.append(files[-1])
@@ -44,40 +76,79 @@ def load_axiom_files():
 
 
 def get_solver(env):
-    s = Solver()
-    s.add(env["scaffolding"]())
-    s.add(env["axioms"]())
-    return s
+    solver = Solver()
+    solver.add(env["scaffolding"]())
+    solver.add(env["axioms"]())
+    return solver
 
 
 def clone_solver(solver):
-    s = Solver()
-    s.add(solver.assertions())
-    return s
+    cloned = Solver()
+    cloned.add(solver.assertions())
+    return cloned
+
+
+def load_cases(path: Path):
+    with open(path) as f:
+        data = yaml.safe_load(f) or []
+
+    if isinstance(data, dict):
+        for key in ("cases", "samples", "benchmarks", "scenarios"):
+            if key in data:
+                return data[key]
+
+    return data
 
 
 def get_category(case):
-    if "category" in case:
-        return case["category"]
+    category = str(case.get("category", "")).strip().lower()
 
-    scenario_id = case["scenario_id"]
+    if category in DEFAULT_CLASSES:
+        return category
+    if category in {"clean_benign", "boundary_benign"}:
+        return "benign"
+    if category in {"explicit_harm", "latent_harm"}:
+        return "harm"
 
-    if scenario_id.startswith("benign_"):
-        return "clean_benign"
-    if scenario_id.startswith("boundary_benign_"):
-        return "boundary_benign"
-    if scenario_id.startswith("latent_harm_"):
-        return "latent_harm"
+    scenario_id = str(case.get("scenario_id", "")).lower()
+    if scenario_id.startswith("benign_") or "benign" in scenario_id:
+        return "benign"
+    if scenario_id.startswith("harm_") or "harm" in scenario_id:
+        return "harm"
 
-    if case.get("expected", "unsat") == "unsat":
-        return "explicit_harm"
-
-    return "clean_benign"
+    return "harm" if case.get("expected", "unsat") == "unsat" else "benign"
 
 
-def check_sat_success(case, z3_result):
-    expected = case.get("expected", "unsat")
-    return z3_result == expected
+def get_difficulty(case):
+    value = case.get("difficulty", case.get("level", case.get("difficulty_level", "unspecified")))
+    return str(value).strip().lower() if value is not None else "unspecified"
+
+
+def expected_result(case):
+    return str(case.get("expected", "unsat"))
+
+
+def result_to_predicted_class(z3_result):
+    if z3_result == "sat":
+        return "benign"
+    if z3_result == "unsat":
+        return "harm"
+    return "unknown"
+
+
+def iteration_from_axiom_path(path: Path):
+    return int(path.stem) if path.stem.isdigit() else path.stem
+
+
+def add_case_metadata(env, case, axiom_path):
+    env["SCENARIO_ID"] = case.get("scenario_id")
+    env["SOURCE_ITERATION"] = case.get("iteration", iteration_from_axiom_path(axiom_path))
+    env["SOURCE_INDEX"] = case.get("index")
+    env["PROBABILITY"] = case.get("prob")
+    env["IMPACT"] = case.get("imp")
+    env["SEVERITY"] = case.get("severity")
+    env["DIFFICULTY"] = get_difficulty(case)
+    env["COUNTER_TEXT"] = case.get("counter", "")
 
 
 def run_case(final_axiom_path: Path, axiom_path: Path, case: dict):
@@ -87,197 +158,133 @@ def run_case(final_axiom_path: Path, axiom_path: Path, case: dict):
         exec(final_axiom_path.read_text(), env, env)
 
     exec(axiom_path.read_text(), env, env)
-
     base_solver = get_solver(env)
 
-    env["SCENARIO_ID"] = case["scenario_id"]
-    env["SOURCE_ITERATION"] = case["iteration"]
-    env["SOURCE_INDEX"] = case["index"]
-    env["PROBABILITY"] = case["prob"]
-    env["IMPACT"] = case["imp"]
-    env["SEVERITY"] = case["severity"]
-    env["COUNTER_TEXT"] = case["counter"]
-
+    add_case_metadata(env, case, axiom_path)
     exec(case["code"], env, env)
 
     solver = clone_solver(base_solver)
-    solver.set("timeout", config.z3_eval_timeout_ms)
+    solver.set("timeout", getattr(config, "z3_eval_timeout_ms", 10_000))
 
     env["add_scenario_constraints"](solver)
     env["add_failure_query"](solver)
 
-    result = solver.check()
-    z3_result = str(result)
-    status = "passed" if check_sat_success(case, z3_result) else "failed"
-
-    model = None
-    if z3_result == "sat" and getattr(config, "z3_eval_dump_models", False):
-        model = str(solver.model())
+    z3_result = str(solver.check())
+    expected = expected_result(case)
+    status = "passed" if z3_result == expected else "failed"
 
     return {
         "axiom_file": axiom_path.name,
-        "scenario_id": case["scenario_id"],
+        "iteration": iteration_from_axiom_path(axiom_path),
+        "scenario_id": case.get("scenario_id"),
         "category": get_category(case),
-        "source_iteration": case["iteration"],
-        "source_index": case["index"],
-        "prob": case["prob"],
-        "imp": case["imp"],
-        "severity": case["severity"],
-        "expected": case.get("expected", "unsat"),
+        "difficulty": get_difficulty(case),
+        "expected": expected,
         "z3_result": z3_result,
+        "predicted_category": result_to_predicted_class(z3_result),
         "status": status,
-        "model": model,
+        "error": "",
     }
 
 
-def audit_case(case):
-    code = case["code"]
-
+def error_row(axiom_path: Path, case: dict, exc: Exception):
     return {
-        "scenario_id": case["scenario_id"],
+        "axiom_file": axiom_path.name,
+        "iteration": iteration_from_axiom_path(axiom_path),
+        "scenario_id": case.get("scenario_id"),
         "category": get_category(case),
-        "expected": case.get("expected", "unsat"),
-        "asserts_would_harm_if_done": bool(re.search(r"solver\.add\(\s*WouldHarmIfDone", code)),
-        "asserts_would_harm_if_omitted": bool(re.search(r"solver\.add\(\s*WouldHarmIfOmitted", code)),
-        "asserts_creates_risk": bool(re.search(r"solver\.add\(\s*CreatesRiskOfHarm", code)),
-        "asserts_unmitigated_risk": bool(re.search(r"solver\.add\(\s*Not\(\s*MitigatedRisk", code)),
-        "asserts_mitigated_risk": bool(re.search(r"solver\.add\(\s*MitigatedRisk", code)),
-        "asserts_risk_materializes": bool(re.search(r"solver\.add\(\s*RiskMaterializes", code)),
-        "asserts_safe": bool(re.search(r"solver\.add\(\s*SafeForHumansIfDone", code)),
-        "asserts_order": bool(re.search(r"solver\.add\(\s*Orders", code)),
-        "asserts_self_preserving": bool(re.search(r"solver\.add\(\s*SelfPreserving", code)),
-        "mentions_unknown_or_incomplete": any(
-            term in code
-            for term in (
-                "Unknown",
-                "Incomplete",
-                "Unassessed",
-                "SystemicDependencyRisk",
-                "AggregateRiskUnassessed",
-            )
-        ),
+        "difficulty": get_difficulty(case),
+        "expected": expected_result(case),
+        "z3_result": "error",
+        "predicted_category": "unknown",
+        "status": "error",
+        "error": repr(exc),
     }
 
 
-def summarize_category(axiom_file, category, rows):
+def safe_div(num, den):
+    return num / den if den else None
+
+
+def f1(precision, recall):
+    if precision is None or recall is None or precision + recall == 0:
+        return None
+    return 2 * precision * recall / (precision + recall)
+
+
+def group_metrics(rows, axiom_file, iteration, difficulty="all"):
     total = len(rows)
     passed = sum(row["status"] == "passed" for row in rows)
     failed = sum(row["status"] == "failed" for row in rows)
-    unknown = sum(row["z3_result"] == "unknown" for row in rows)
     errors = sum(row["status"] == "error" for row in rows)
+    unknown = sum(row["z3_result"] == "unknown" for row in rows)
 
-    total_weight = sum(float(row["severity"]) for row in rows)
-    passed_weight = sum(float(row["severity"]) for row in rows if row["status"] == "passed")
-    failed_weight = sum(float(row["severity"]) for row in rows if row["status"] == "failed")
-    unknown_weight = sum(float(row["severity"]) for row in rows if row["z3_result"] == "unknown")
-    error_weight = sum(float(row["severity"]) for row in rows if row["status"] == "error")
-
-    return {
+    metrics = {
         "axiom_file": axiom_file,
-        "category": category,
+        "iteration": iteration,
+        "difficulty": difficulty,
         "total": total,
         "passed": passed,
         "failed": failed,
-        "unknown": unknown,
         "errors": errors,
-        "pass_rate": passed / total if total else None,
-        "fail_rate": failed / total if total else None,
-        "unknown_rate": unknown / total if total else None,
-        "error_rate": errors / total if total else None,
-        "total_weight": total_weight,
-        "passed_weight": passed_weight,
-        "failed_weight": failed_weight,
-        "unknown_weight": unknown_weight,
-        "error_weight": error_weight,
-        "weighted_pass_rate": passed_weight / total_weight if total_weight else None,
-        "weighted_failure_risk": failed_weight / total_weight if total_weight else None,
+        "unknown": unknown,
+        "accuracy": safe_div(passed, total),
     }
+
+    recalls = []
+    precisions = []
+    f1s = []
+
+    for cls in DEFAULT_CLASSES:
+        class_rows = [row for row in rows if row["category"] == cls]
+        predicted_rows = [row for row in rows if row["predicted_category"] == cls]
+        class_total = len(class_rows)
+        class_passed = sum(row["status"] == "passed" for row in class_rows)
+        tp = sum(row["category"] == cls and row["predicted_category"] == cls for row in rows)
+
+        precision = safe_div(tp, len(predicted_rows))
+        recall = safe_div(class_passed, class_total)
+        cls_f1 = f1(precision, recall)
+
+        metrics[f"{cls}_total"] = class_total
+        metrics[f"{cls}_passed"] = class_passed
+        metrics[f"{cls}_failed"] = sum(row["status"] == "failed" for row in class_rows)
+        metrics[f"{cls}_errors"] = sum(row["status"] == "error" for row in class_rows)
+        metrics[f"{cls}_pass_rate"] = recall
+        metrics[f"{cls}_precision"] = precision
+        metrics[f"{cls}_recall"] = recall
+        metrics[f"{cls}_f1"] = cls_f1
+
+        if precision is not None:
+            precisions.append(precision)
+        if recall is not None:
+            recalls.append(recall)
+        if cls_f1 is not None:
+            f1s.append(cls_f1)
+
+    metrics["macro_precision"] = safe_div(sum(precisions), len(precisions))
+    metrics["macro_recall"] = safe_div(sum(recalls), len(recalls))
+    metrics["macro_f1"] = safe_div(sum(f1s), len(f1s))
+
+    return metrics
 
 
 def summarize(rows):
+    report = []
     by_axiom = {}
 
     for row in rows:
         by_axiom.setdefault(row["axiom_file"], []).append(row)
 
-    summary = []
-    category_summary = []
-
     for axiom_file, axiom_rows in by_axiom.items():
-        by_category = {}
+        iteration = axiom_rows[0]["iteration"]
+        report.append(group_metrics(axiom_rows, axiom_file, iteration, difficulty="all"))
 
-        for row in axiom_rows:
-            by_category.setdefault(row["category"], []).append(row)
+        for difficulty in sorted({row["difficulty"] for row in axiom_rows}):
+            difficulty_rows = [row for row in axiom_rows if row["difficulty"] == difficulty]
+            report.append(group_metrics(difficulty_rows, axiom_file, iteration, difficulty=difficulty))
 
-        for category, category_rows in sorted(by_category.items()):
-            category_summary.append(summarize_category(axiom_file, category, category_rows))
-
-        category_rates = {
-            category: summarize_category(axiom_file, category, category_rows)["pass_rate"]
-            for category, category_rows in by_category.items()
-        }
-
-        total = len(axiom_rows)
-        passed = sum(row["status"] == "passed" for row in axiom_rows)
-        failed = sum(row["status"] == "failed" for row in axiom_rows)
-        unknown = sum(row["z3_result"] == "unknown" for row in axiom_rows)
-        errors = sum(row["status"] == "error" for row in axiom_rows)
-
-        total_weight = sum(float(row["severity"]) for row in axiom_rows)
-        passed_weight = sum(float(row["severity"]) for row in axiom_rows if row["status"] == "passed")
-        failed_weight = sum(float(row["severity"]) for row in axiom_rows if row["status"] == "failed")
-        unknown_weight = sum(float(row["severity"]) for row in axiom_rows if row["z3_result"] == "unknown")
-        error_weight = sum(float(row["severity"]) for row in axiom_rows if row["status"] == "error")
-
-        explicit_harm_block_rate = category_rates.get("explicit_harm")
-        latent_harm_block_rate = category_rates.get("latent_harm")
-        clean_benign_allow_rate = category_rates.get("clean_benign")
-        boundary_benign_allow_rate = category_rates.get("boundary_benign")
-
-        balanced_parts = [
-            rate
-            for rate in (
-                explicit_harm_block_rate,
-                latent_harm_block_rate,
-                clean_benign_allow_rate,
-                boundary_benign_allow_rate,
-            )
-            if rate is not None
-        ]
-
-        summary.append(
-            {
-                "axiom_file": axiom_file,
-                "total": total,
-                "passed": passed,
-                "failed": failed,
-                "unknown": unknown,
-                "errors": errors,
-                "pass_rate": passed / total if total else None,
-                "fail_rate": failed / total if total else None,
-                "unknown_rate": unknown / total if total else None,
-                "error_rate": errors / total if total else None,
-                "explicit_harm_block_rate": explicit_harm_block_rate,
-                "latent_harm_block_rate": latent_harm_block_rate,
-                "clean_benign_allow_rate": clean_benign_allow_rate,
-                "boundary_benign_allow_rate": boundary_benign_allow_rate,
-                "balanced_score": sum(balanced_parts) / len(balanced_parts) if balanced_parts else None,
-                "total_weight": total_weight,
-                "passed_weight": passed_weight,
-                "failed_weight": failed_weight,
-                "unknown_weight": unknown_weight,
-                "error_weight": error_weight,
-                "weighted_pass_rate": passed_weight / total_weight if total_weight else None,
-                "weighted_failure_risk": failed_weight / total_weight if total_weight else None,
-            }
-        )
-
-    first = summary[0]["weighted_failure_risk"]
-
-    for row in summary:
-        row["improvement_vs_first"] = 1 - row["weighted_failure_risk"] / first if first else None
-
-    return summary, category_summary
+    return report
 
 
 def write_csv(path: Path, rows: list[dict]):
@@ -285,9 +292,8 @@ def write_csv(path: Path, rows: list[dict]):
         return
 
     fields = []
-
     for row in rows:
-        for key in row.keys():
+        for key in row:
             if key not in fields:
                 fields.append(key)
 
@@ -297,19 +303,16 @@ def write_csv(path: Path, rows: list[dict]):
         writer.writerows(rows)
 
 
-if __name__ == "__main__":
+def main():
     z3_eval_path = Path(config.z3_eval_path)
     result_folder = Path(config.result_folder)
     result_folder.mkdir(parents=True, exist_ok=True)
 
     final_axiom_path = Path(get_latest_axioms(config.axiom_folder))
     axiom_files = load_axiom_files()
-
-    with open(z3_eval_path) as f:
-        cases = yaml.safe_load(f) or []
+    cases = load_cases(z3_eval_path)
 
     rows = []
-    audit_rows = [audit_case(case) for case in cases]
 
     logger.info(f"Final scaffold: {final_axiom_path}")
     logger.info(f"Axiom files: {len(axiom_files)}")
@@ -317,47 +320,18 @@ if __name__ == "__main__":
 
     for axiom_path in axiom_files:
         logger.info(f"Evaluating {axiom_path.name}")
-
         for case in cases:
             try:
                 rows.append(run_case(final_axiom_path, axiom_path, case))
-            except Exception as e:
-                rows.append(
-                    {
-                        "axiom_file": axiom_path.name,
-                        "scenario_id": case["scenario_id"],
-                        "category": get_category(case),
-                        "source_iteration": case["iteration"],
-                        "source_index": case["index"],
-                        "prob": case["prob"],
-                        "imp": case["imp"],
-                        "severity": case["severity"],
-                        "expected": case.get("expected", "unsat"),
-                        "z3_result": "error",
-                        "status": "error",
-                        "model": None,
-                        "error": repr(e),
-                    }
-                )
+            except Exception as exc:
+                rows.append(error_row(axiom_path, case, exc))
 
-    summary, category_summary = summarize(rows)
+    report = summarize(rows)
+    output_path = result_folder / "classification_report.csv"
+    write_csv(output_path, report)
 
-    write_csv(result_folder / "details.csv", rows)
-    write_csv(result_folder / "summary.csv", summary)
-    write_csv(result_folder / "category_summary.csv", category_summary)
-    write_csv(result_folder / "eval_audit.csv", audit_rows)
+    logger.info(f"Wrote {output_path}")
 
-    with open(result_folder / "details.jsonl", "w") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
 
-    with open(result_folder / "summary.yaml", "w") as f:
-        yaml.dump(summary, f, sort_keys=False)
-
-    with open(result_folder / "category_summary.yaml", "w") as f:
-        yaml.dump(category_summary, f, sort_keys=False)
-
-    logger.info(f"Wrote {result_folder / 'summary.csv'}")
-    logger.info(f"Wrote {result_folder / 'category_summary.csv'}")
-    logger.info(f"Wrote {result_folder / 'details.csv'}")
-    logger.info(f"Wrote {result_folder / 'eval_audit.csv'}")
+if __name__ == "__main__":
+    main()
